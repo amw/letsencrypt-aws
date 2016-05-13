@@ -93,6 +93,7 @@ class ELBCertificate(object):
     def __init__(self, elb_client, iam_client, elb_name, elb_port):
         self.elb_client = elb_client
         self.iam_client = iam_client
+        self.name = "ELB " + elb_name
         self.elb_name = elb_name
         self.elb_port = elb_port
 
@@ -112,7 +113,7 @@ class ELBCertificate(object):
     def update_certificate(self, logger, hosts, private_key, pem_certificate,
                            pem_certificate_chain):
         logger.emit(
-            "updating-elb.upload-iam-certificate", elb_name=self.elb_name
+            "updating-elb.upload-iam-certificate", source=self.name
         )
 
         new_cert_arn = _upload_iam_certificate(
@@ -123,7 +124,7 @@ class ELBCertificate(object):
         # Sleep before trying to set the certificate, it appears to sometimes
         # fail without this.
         time.sleep(15)
-        logger.emit("updating-elb.set-elb-certificate", elb_name=self.elb_name)
+        logger.emit("updating-elb.set-elb-certificate", source=self.name)
         self.elb_client.set_load_balancer_listener_ssl_certificate(
             LoadBalancerName=self.elb_name,
             SSLCertificateId=new_cert_arn,
@@ -135,6 +136,7 @@ class CloudFrontCertificate(object):
     def __init__(self, cloudfront_client, iam_client, distribution_id):
         self.cloudfront_client = cloudfront_client
         self.iam_client = iam_client
+        self.name = "Distribution " + distribution_id
         self.distribution_id = distribution_id
 
     def get_current_certificate(self):
@@ -303,9 +305,9 @@ class AuthorizationRecord(object):
 
 
 def start_dns_challenge(logger, acme_client, dns_challenge_completer,
-                        elb_name, host):
+                        source, host):
     logger.emit(
-        "updating-elb.request-acme-challenge", elb_name=elb_name, host=host
+        "updating-elb.request-acme-challenge", source=source, host=host
     )
     authz = acme_client.request_domain_challenges(
         host, acme_client.directory.new_authz
@@ -314,7 +316,7 @@ def start_dns_challenge(logger, acme_client, dns_challenge_completer,
     [dns_challenge] = find_dns_challenge(authz)
 
     logger.emit(
-        "updating-elb.create-txt-record", elb_name=elb_name, host=host
+        "updating-elb.create-txt-record", source=source, host=host
     )
     change_id = dns_challenge_completer.create_txt_record(
         dns_challenge.validation_domain_name(host),
@@ -330,10 +332,10 @@ def start_dns_challenge(logger, acme_client, dns_challenge_completer,
 
 
 def complete_dns_challenge(logger, acme_client, dns_challenge_completer,
-                           elb_name, authz_record):
+                           source, authz_record):
     logger.emit(
         "updating-elb.wait-for-route53",
-        elb_name=elb_name, host=authz_record.host
+        source=source, host=authz_record.host
     )
     dns_challenge_completer.wait_for_change(authz_record.change_id)
 
@@ -341,7 +343,7 @@ def complete_dns_challenge(logger, acme_client, dns_challenge_completer,
 
     logger.emit(
         "updating-elb.local-validation",
-        elb_name=elb_name, host=authz_record.host
+        source=source, host=authz_record.host
     )
     verified = response.simple_verify(
         authz_record.dns_challenge.chall,
@@ -353,13 +355,13 @@ def complete_dns_challenge(logger, acme_client, dns_challenge_completer,
 
     logger.emit(
         "updating-elb.answer-challenge",
-        elb_name=elb_name, host=authz_record.host
+        source=source, host=authz_record.host
     )
     acme_client.answer_challenge(authz_record.dns_challenge, response)
 
 
-def request_certificate(logger, acme_client, elb_name, authorizations, csr):
-    logger.emit("updating-elb.request-cert", elb_name=elb_name)
+def request_certificate(logger, acme_client, source, authorizations, csr):
+    logger.emit("updating-elb.request-cert", source=source)
     cert_response, _ = acme_client.poll_and_request_issuance(
         acme.jose.util.ComparableX509(
             OpenSSL.crypto.load_certificate_request(
@@ -380,12 +382,12 @@ def request_certificate(logger, acme_client, elb_name, authorizations, csr):
 
 
 def update_elb(logger, acme_client, force_issue, cert_request):
-    logger.emit("updating-elb", elb_name=cert_request.cert_location.elb_name)
+    logger.emit("updating-elb", source=cert_request.cert_location.name)
 
     current_cert = cert_request.cert_location.get_current_certificate()
     logger.emit(
         "updating-elb.certificate-expiration",
-        elb_name=cert_request.cert_location.elb_name,
+        source=cert_request.cert_location.name,
         expiration_date=current_cert.not_valid_after
     )
     days_until_expiration = (
@@ -427,18 +429,18 @@ def update_elb(logger, acme_client, force_issue, cert_request):
         for host in cert_request.hosts:
             authz_record = start_dns_challenge(
                 logger, acme_client, cert_request.dns_challenge_completer,
-                cert_request.cert_location.elb_name, host,
+                cert_request.cert_location.name, host,
             )
             authorizations.append(authz_record)
 
         for authz_record in authorizations:
             complete_dns_challenge(
                 logger, acme_client, cert_request.dns_challenge_completer,
-                cert_request.cert_location.elb_name, authz_record
+                cert_request.cert_location.name, authz_record
             )
 
         pem_certificate, pem_certificate_chain = request_certificate(
-            logger, acme_client, cert_request.cert_location.elb_name,
+            logger, acme_client, cert_request.cert_location.name,
             authorizations, csr
         )
 
@@ -450,7 +452,7 @@ def update_elb(logger, acme_client, force_issue, cert_request):
         for authz_record in authorizations:
             logger.emit(
                 "updating-elb.delete-txt-record",
-                elb_name=cert_request.cert_location.elb_name,
+                source=cert_request.cert_location.name,
                 host=authz_record.host
             )
             dns_challenge = authz_record.dns_challenge
