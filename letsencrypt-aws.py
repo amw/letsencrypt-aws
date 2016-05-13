@@ -146,10 +146,12 @@ class CloudFrontCertificate(object):
         cert = response["DistributionConfig"]["ViewerCertificate"]
         # If the cert is of a different type then we don't have code to check
         # for it, annoying.
-        assert cert.get("IAMCertificateId")
-        return _get_iam_certificate(
-            self.iam_client, cert["IAMCertificateId"]
-        )
+        if not cert.get("IAMCertificateId"):
+            return None
+        else:
+            return _get_iam_certificate(
+                self.iam_client, cert["IAMCertificateId"]
+            )
 
     def update_certificate(self, logger, hosts, private_key, pem_certificate,
                            pem_certificate_chain):
@@ -385,34 +387,38 @@ def update_elb(logger, acme_client, force_issue, cert_request):
     logger.emit("updating-elb", source=cert_request.cert_location.name)
 
     current_cert = cert_request.cert_location.get_current_certificate()
-    logger.emit(
-        "updating-elb.certificate-expiration",
-        source=cert_request.cert_location.name,
-        expiration_date=current_cert.not_valid_after
-    )
-    days_until_expiration = (
-        current_cert.not_valid_after - datetime.datetime.today()
-    )
 
-    try:
-        san_extension = current_cert.extensions.get_extension_for_class(
-            x509.SubjectAlternativeName
+    if current_cert:
+        logger.emit(
+            "updating-elb.certificate-expiration",
+            source=cert_request.cert_location.name,
+            expiration_date=current_cert.not_valid_after
         )
-    except x509.ExtensionNotFound:
-        # Handle the case where an old certificate doesn't have a SAN extension
-        # and always reissue in that case.
-        current_domains = []
-    else:
-        current_domains = san_extension.value.get_values_for_type(x509.DNSName)
+        days_until_expiration = (
+            current_cert.not_valid_after - datetime.datetime.today()
+        )
 
-    if (
-        days_until_expiration > CERTIFICATE_EXPIRATION_THRESHOLD and
-        # If the set of hosts we want for our certificate changes, we update
-        # even if the current certificate isn't expired.
-        sorted(current_domains) == sorted(cert_request.hosts) and
-        not force_issue
-    ):
-        return
+        try:
+            san_extension = current_cert.extensions.get_extension_for_class(
+                x509.SubjectAlternativeName
+            )
+        except x509.ExtensionNotFound:
+            # Handle the case where an old certificate doesn't have a SAN
+            # extension and always reissue in that case.
+            current_domains = []
+        else:
+            current_domains = san_extension.value.get_values_for_type(
+                x509.DNSName
+            )
+
+        if (
+            not force_issue and
+            days_until_expiration > CERTIFICATE_EXPIRATION_THRESHOLD and
+            # If the set of hosts we want for our certificate changes,
+            # we update even if the current certificate isn't expired.
+            sorted(current_domains) == sorted(cert_request.hosts)
+        ):
+            return
 
     if cert_request.key_type == "rsa":
         private_key = generate_rsa_private_key()
