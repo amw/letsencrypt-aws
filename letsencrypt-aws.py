@@ -86,7 +86,7 @@ def _upload_iam_certificate(iam_client, hosts, private_key, pem_certificate,
         CertificateBody=pem_certificate,
         CertificateChain=pem_certificate_chain,
     )
-    return response["ServerCertificateMetadata"]["Arn"]
+    return response["ServerCertificateMetadata"]
 
 
 class ELBCertificate(object):
@@ -119,7 +119,7 @@ class ELBCertificate(object):
         new_cert_arn = _upload_iam_certificate(
             self.iam_client,
             hosts, private_key, pem_certificate, pem_certificate_chain
-        )
+        )["Arn"]
 
         # Sleep before trying to set the certificate, it appears to sometimes
         # fail without this.
@@ -156,23 +156,41 @@ class CloudFrontCertificate(object):
     def update_certificate(self, logger, hosts, private_key, pem_certificate,
                            pem_certificate_chain):
         logger.emit("upload-iam-certificate")
-        new_cert_arn = _upload_iam_certificate(
+        new_cert_id = _upload_iam_certificate(
             self.iam_client,
             hosts, private_key, pem_certificate, pem_certificate_chain
-        )
+        )["ServerCertificateId"]
 
         # Sleep before trying to set the certificate, it appears to sometimes
         # fail without this.
         time.sleep(15)
 
-        config = self.cloudfront_client.get_distribution_config(
+        response = self.cloudfront_client.get_distribution_config(
             Id=self.distribution_id
         )
-        cert = config["DistributionConfig"]["ViewerCertificate"]
-        cert["IAMCertificateId"] = new_cert_arn
+        etag = response["ETag"]
+        config = response["DistributionConfig"]
+        protocol = config["ViewerCertificate"]["MinimumProtocolVersion"]
+        ssl_mode = config["ViewerCertificate"].get(
+            "SSLSupportMethod", "sni-only"
+        )
+
+        # SSLv3 can't be used with SNI
+        if ssl_mode == "sni-only":
+            protocol = "TLSv1"
+
+        config["ViewerCertificate"] = {
+            "IAMCertificateId": new_cert_id,
+            "MinimumProtocolVersion": protocol,
+            "SSLSupportMethod": ssl_mode
+        }
 
         logger.emit("set-cloudfront-distribution-certificate")
-        self.cloudfront_client.update_distribution(DistributionConfig=config)
+        self.cloudfront_client.update_distribution(
+            Id=self.distribution_id,
+            DistributionConfig=config,
+            IfMatch=etag
+        )
 
 
 class Route53ChallengeCompleter(object):
