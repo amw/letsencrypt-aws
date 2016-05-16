@@ -70,7 +70,7 @@ def _get_iam_certificate(iam_client, certificate_id):
 
 
 def _upload_iam_certificate(iam_client, hosts, private_key, pem_certificate,
-                            pem_certificate_chain):
+                            pem_certificate_chain, path="/"):
     response = iam_client.upload_server_certificate(
         ServerCertificateName=generate_certificate_name(
             hosts,
@@ -85,6 +85,7 @@ def _upload_iam_certificate(iam_client, hosts, private_key, pem_certificate,
         ),
         CertificateBody=pem_certificate,
         CertificateChain=pem_certificate_chain,
+        Path=path,
     )
     return response["ServerCertificateMetadata"]
 
@@ -158,7 +159,8 @@ class CloudFrontCertificate(object):
         logger.emit("upload-iam-certificate")
         new_cert_id = _upload_iam_certificate(
             self.iam_client,
-            hosts, private_key, pem_certificate, pem_certificate_chain
+            hosts, private_key, pem_certificate, pem_certificate_chain,
+            path="/cloudfront/"
         )["ServerCertificateId"]
 
         # Sleep before trying to set the certificate, it appears to sometimes
