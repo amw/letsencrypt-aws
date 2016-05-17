@@ -54,11 +54,15 @@ class CertificateRequest(object):
         self.key_type = key_type
 
 
-def _get_iam_certificate(iam_client, certificate_id):
+def _get_iam_certificate(iam_client, id_or_arn):
     paginator = iam_client.get_paginator("list_server_certificates")
     for page in paginator.paginate():
         for server_certificate in page["ServerCertificateMetadataList"]:
-            if server_certificate["Arn"] == certificate_id:
+            if (
+                server_certificate["Arn"] == id_or_arn or
+                server_certificate["ServerCertificateId"] == id_or_arn
+            ):
+
                 cert_name = server_certificate["ServerCertificateName"]
                 response = iam_client.get_server_certificate(
                     ServerCertificateName=cert_name,
